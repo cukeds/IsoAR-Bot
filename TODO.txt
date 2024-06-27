@@ -1,0 +1,7 @@
+Mensaje de recordatorio
+Cambiar pendiente -> Estado
+Habilidad de guardar la media de las tareas
+Agregar documentacion a tareas en proceso
+Actualizaciones modo bitacora para tareas a lo largo del tiempo
+
+Registrar inconformidades a la hora de terminar la fecha limite de una tarea
