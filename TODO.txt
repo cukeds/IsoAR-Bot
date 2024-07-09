@@ -5,3 +5,6 @@ Agregar documentacion a tareas en proceso
 Actualizaciones modo bitacora para tareas a lo largo del tiempo
 
 Registrar inconformidades a la hora de terminar la fecha limite de una tarea
+Pedir un nuevo recordatorio a proyectos cada vez que se complete el anterior. Si no se recibe ninguno, agendar para el dia siguiente o semana siguiente.
+Pedir ultimas actualizaciones
+Recordatorios diarios de tareas

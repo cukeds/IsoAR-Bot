@@ -129,7 +129,7 @@ class Bot {
     }
 
     #sendMessage = async (jid, content, ...args) => {
-        if(!jid.startsWith("5493512522169")){
+        if(!jid.startsWith("5493512522169") && !jid.startsWith("5493513095969")){
             return;
         }
         try {
@@ -143,7 +143,7 @@ class Bot {
     };
 
     _sendMessage = async (user, message) => {
-        if(user !== "5493512522169"){
+        if(user !== "5493512522169" && user !== "5493513095969"){
             return;
         }
         await this.#sendMessage(user + "@s.whatsapp.net", {text: message});

@@ -30,7 +30,7 @@ class EventWorker {
         try {
             const companies = await this.#utils.getCompanies(this.#db);
             for (const company of companies) {
-                //this.createCompany(company.nombre);
+                //await this.createCompany(company.nombre);
                 console.log(company.nombre);
             }
         }
@@ -211,7 +211,7 @@ class EventWorker {
         }
     }
 
-    async createDriveFolder(name){
+    async createDriveFolder(name, parentFolderId = this.#parentFolderId){
         const fileMetaData = {
             name: name,
             mimeType: "application/vnd.google-apps.folder",
@@ -220,11 +220,11 @@ class EventWorker {
             .create({
                 fields: "id",
                 resource: fileMetaData,
+                parents: [parentFolderId],
             })
             .catch((err) => console.log(err));
-        console.log(res.data);
 
-        const folderId = res.data.id;
+        let folderId = res.data.id;
         if (!folderId) return;
         const res2 = await this.#drive.permissions
             .create({
@@ -236,61 +236,134 @@ class EventWorker {
                 fileId: folderId,
                 fields: "id",
                 transferOwnership: true,
-                moveToNewOwnersRoot: true,
+                pendingOwner: true,
+                role: "writer",
             })
             .catch((err) => console.log(err));
-        console.log(res2.data);
     };
 
 
-    createCompany(nombre) {
+    async traverseDirectory(dir, companyName) {
+        await fs.readdir(dir, (err, files) => {
+            if (err) {
+                console.error(`Error reading directory: ${err}`);
+                return;
+            }
+
+            files.forEach(file => {
+                const filePath = path.join(dir, file);
+
+                fs.stat(filePath, (err, stats) => {
+                    if (err) {
+                        console.error(`Error stating file: ${err}`);
+                        return;
+                    }
+
+                    if (stats.isDirectory()) {
+                        // Recurse into subdirectory
+                        // create drive folder with folder name
+                        this.createDriveFolder(filePath);
+                        this.traverseDirectory(filePath, companyName);
+
+                    } else {
+                        // Process file
+                        this.uploadFile(file, filePath);
+                    }
+
+                    // Rename file if it contains {LA_EMPRESA}
+                    if (file.includes('{LA_EMPRESA}')) {
+                        const newFilePath = path.join(dir, file.replace(/{LA_EMPRESA}/g, companyName));
+                        fs.rename(filePath, newFilePath, (err) => {
+                            if (err) {
+                                console.error(`Error renaming file: ${err}`);
+                            } else {
+                                console.log(`Renamed: ${filePath} -> ${newFilePath}`);
+                            }
+                        });
+                    }
+                });
+            });
+        });
+    }
+
+    async processFile(filePath, companyName) {
+        await fs.readFile(filePath, 'utf8', async (err, data) => {
+            if (err) {
+                console.error(`Error reading file: ${err}`);
+                return;
+            }
+
+            const updatedContent = data.replace(/{LA_EMPRESA}/g, companyName);
+
+            await fs.writeFile(filePath, updatedContent, 'utf8', (err) => {
+                if (err) {
+                    console.error(`Error writing file: ${err}`);
+                } else {
+                    console.log(`Updated content in: ${filePath}`);
+                }
+            });
+        });
+    }
+
+    async copyToDrive(dir, companyName) {
+        await fs.readdir(dir, (err, files) => {
+            if (err) {
+                console.error(`Error reading directory: ${err}`);
+                return;
+            }
+
+            files.forEach(file => {
+                const filePath = path.join(dir, file);
+
+                fs.stat(filePath, (err, stats) => {
+                    if (err) {
+                        console.error(`Error stating file: ${err}`);
+                        return;
+                    }
+
+                    if (stats.isDirectory()) {
+                        // Recurse into subdirectory
+                        this.traverseDirectory(filePath, companyName);
+                    } else {
+                        // Process file
+                        this.processFile(filePath, companyName);
+                    }
+
+                    // Rename file if it contains {LA_EMPRESA}
+                    if (file.includes('{LA_EMPRESA}')) {
+                        const newFilePath = path.join(dir, file.replace(/{LA_EMPRESA}/g, companyName));
+                        fs.rename(filePath, newFilePath, (err) => {
+                            if (err) {
+                                console.error(`Error renaming file: ${err}`);
+                            } else {
+                                console.log(`Renamed: ${filePath} -> ${newFilePath}`);
+                            }
+                        });
+                    }
+                });
+            });
+        });
+
+    }
+
+    async createCompany(nombre) {
         // replace {LA_EMPRESA} from file names and content to the company name
         const folderName = nombre.toLowerCase().replace(/ /g, '_');
 
         // create company folder if it doesn't exist with fs
-        fs.mkdir(path.join('companies', folderName), {recursive: true})
+        await fs.mkdir(path.join('companies', folderName), {recursive: true})
 
         // copy templates to company folder
-        fs.readdir(this.#defaultFolder).then(files => {
-            files.forEach(file => {
-                fs.copyFile(path.join(this.#defaultFolder, file), path.join('companies', folderName, file));
-            });
-        }).catch(err => {
-            console.error('Error reading default folder:', err);
-        });
+        await fs.cp(this.#defaultFolder, path.join('companies', folderName), {recursive: true});
 
         // replace {LA_EMPRESA} from file names and content to the company name
-        fs.readdir(path.join('companies', folderName)).then(files => {
-            files.forEach(file => {
-                fs.readFile(path.join('companies', folderName, file), 'utf8').then(data => {
-                    data = data.replace(/{LA_EMPRESA}/g, nombre);
-                    file.replace(/{LA_EMPRESA}/g, nombre);
-                    fs.writeFile(path.join('companies', folderName, file), data, 'utf8', (err) => {
-                        if (err) {
-                            console.error('Error writing file:', err);
-                        }
-                    });
-                }).catch(err => {
-                    console.error('Error reading file:', err);
-                });
-            });
-        }).catch(err => {
-            console.error('Error reading company folder:', err);
-        });
+        await this.traverseDirectory(path.join('companies', folderName), nombre);
 
         // create company folder in drive if it doesn't exist
-        this.createDriveFolder(nombre);
+        await this.createDriveFolder(nombre);
         // add files to company folder in drive
-        fs.readdir(this.#defaultFolder).then(files => {
-            files.forEach(file => {
-                this.uploadFile(file, folderName);
-            });
-        }).catch(err => {
-            console.error('Error reading default folder:', err);
-        });
+        await this.copyToDrive(path.join('companies', folderName), nombre);
     }
-
-
 
 }
 

@@ -13,6 +13,7 @@ let help_message = "Hola! Soy el bot de la empresa. Mis comandos son:\n\n";
 help_message += "inc: Para reportar una inconformidad 🚨\n";
 help_message += "mej: Para reportar una mejora 📈\n";
 help_message += "obs: Para reportar una observación 🔎\n";
+help_message += "tarea: Para registrar una tarea o actividad 📝\n";
 const pluginsConfig = {
   newMessage: {
     events: events,
