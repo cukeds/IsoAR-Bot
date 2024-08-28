@@ -1,4 +1,5 @@
 const fs = require("fs");
+const util = require("util")
 
 class Utils{
 
@@ -53,7 +54,7 @@ class Utils{
         let senderId = sender.split("@")[0];
         try {
             fs.writeFileSync(this.historyFilePath(senderId), `${JSON.stringify(history)}`);
-            console.log("Message history file updated for sender:", senderId);
+            //console.log("Message history file updated for sender:", senderId);
         } catch (err) {
             console.error("Error writing message history file:", err);
             // Handle the error appropriately
@@ -107,41 +108,86 @@ class Utils{
 
     }
 
-    getEmployeeByNumber(number, db){
-        return new Promise((resolve, reject) => {
-            db.query(`SELECT * FROM empleados WHERE telefono = ${number}`, (err, result) => {
-                if(err) reject(err);
-                resolve(result[0]);
-            });
-        });
+    async getEmployeeByNumber(number, db) {
+        try {
+            const [results] = await db.execute(`SELECT * FROM empleados WHERE telefono = ?`, [number]);
+            return results[0];
+        } catch (error) {
+            throw error;
+        }
     }
 
-    getCompanyByEmployeeId(id, db){
-        return new Promise((resolve, reject) => {
-            db.query(`SELECT * FROM empresas WHERE idempresa = (SELECT idempresa FROM empleados_x_empresas WHERE idempleado = ${id})`, (err, result) => {
-                if(err) reject(err);
-                resolve(result[0]);
-            });
-        });
+
+    async getCompanyByEmployeeId(id, db) {
+        try {
+            const [results] = await db.execute(`
+            SELECT * 
+            FROM empresas 
+            WHERE idempresa = (
+                SELECT idempresa 
+                FROM empleados_x_empresas 
+                WHERE idempleado = ?
+            )`, [id]);
+            return results[0];
+        } catch (error) {
+            throw error;
+        }
     }
 
-    getCoordinatorByCompanyId(id, db){
-        return new Promise((resolve, reject) => {
-            db.query(`SELECT * FROM empleados WHERE idempleado = (SELECT idcoordinador FROM empresas WHERE idempresa = ${id})`, (err, result) => {
-                if(err) reject(err);
-                resolve(result[0]);
-            });
-        });
+    async getCoordinatorByCompanyId(id, db) {
+        try {
+            const [results] = await db.execute(`
+            SELECT * 
+            FROM empleados 
+            WHERE idempleado = (
+                SELECT idcoordinador 
+                FROM empresas 
+                WHERE idempresa = ?
+            )`, [id]);
+            return results[0];
+        } catch (error) {
+            throw error;
+        }
     }
 
-    getEmployees(db){
-        return new Promise((resolve, reject) => {
-            db.query(`SELECT * FROM empleados`, (err, result) => {
-                if(err) reject(err);
-                resolve(result);
-            });
-        });
+
+    async getEmployees(db) {
+        try {
+            const [results] = await db.execute(`SELECT * FROM empleados`);
+            return results;
+        } catch (error) {
+            throw error;
+        }
     }
+
+
+    async getEmployeeById(id, db) {
+        try {
+            const [results] = await db.execute(`SELECT * FROM empleados WHERE idempleado = ?`, [id]);
+            return results[0];
+        } catch (error) {
+            throw error;
+        }
+    }
+
+
+    async getEmployeesByName(name, last_name, db) {
+        try {
+            let query = `SELECT * FROM empleados WHERE nombre = ?`;
+            const values = [name];
+
+            if (last_name && last_name !== "" && last_name !== null && last_name !== undefined) {
+                query += ` AND apellido = ?`;
+                values.push(last_name);
+            }
+
+            const [results] = await db.execute(query, values);
+            return results;
+        } catch (error) {
+            throw error;
+        }
+    }
+
 
     async addTask(task, db) {
         let task_to_add = {
@@ -149,44 +195,154 @@ class Utils{
             fecha_solicitud: task.request_date,
             fecha_limite: task.deadline,
             estado: "pendiente",
-            idsupervisor: null, // Initialize to null or undefined
-            idempresa: null,    // Initialize to null or undefined
-            idempleado: null    // Initialize to null or undefined
+            idsupervisor: null,
+            idempresa: null,
+            idempleado: null
         };
 
         try {
+            console.log('Adding task:', task);
+
             const supervisorEmployee = await this.getEmployeeByNumber(task.supervisor, db);
             task_to_add.idsupervisor = supervisorEmployee.idempleado;
+            console.log('Supervisor ID fetched:', task_to_add.idsupervisor);
 
             const employee = await this.getEmployeeByNumber(task.employee, db);
+            console.log('Employee fetched:', employee, task.employee);
             task_to_add.idempleado = employee.idempleado;
+            console.log('Employee ID fetched:', task_to_add.idempleado);
 
-            return new Promise((resolve, reject) => {
-                const query = `INSERT INTO tareas (idsupervisor, idempleado, descripcion, fecha_solicitud, fecha_limite, estado) 
-                           VALUES (?, ?, ?, ?, ?, ?)`;
-                const values = [task_to_add.idsupervisor, task_to_add.idempleado, task_to_add.descripcion,
-                    task_to_add.fecha_solicitud, task_to_add.fecha_limite, task_to_add.estado];
+            const query = `INSERT INTO tareas (idsupervisor, idempleado, descripcion, fecha_solicitud, fecha_limite, estado) 
+                       VALUES (?, ?, ?, ?, ?, ?)`;
+            const values = [
+                task_to_add.idsupervisor,
+                task_to_add.idempleado,
+                task_to_add.descripcion,
+                task_to_add.fecha_solicitud,
+                task_to_add.fecha_limite,
+                task_to_add.estado
+            ];
 
-                db.query(query, values, (err, result) => {
-                    if (err) {
-                        reject(err);
-                    } else {
-                        resolve(result);
-                    }
-                });
-            });
+            const [result] = await db.execute(query, values);
+            console.log('Task successfully added to database:', result);
+
+            console.log('Task successfully processed:', task);
         } catch (error) {
+            console.error('Error in addTask:', error);
+            throw error;
+        }
+    }
+
+    async getCompanies(db) {
+        try {
+            const [results] = await db.execute(`SELECT * FROM empresas`);
+            return results;
+        } catch (error) {
+            throw error;
+        }
+    }
+
+    async getPendingTasksWithinTimeframe(hours, db) {
+
+        try {
+            const [results] = await db.execute(`
+            SELECT * 
+            FROM tareas 
+            WHERE fecha_limite >= NOW() 
+            AND fecha_limite < DATE_ADD(NOW(), INTERVAL ? HOUR)
+            AND recordatorio_enviado = 0`, [hours]);
+            return results;
+        }
+        catch (error) {
+            throw error;
+        }
+
+    }
+
+    async updateTaskReminderStatus(idtask, db) {
+        try {
+            const query = `UPDATE tareas SET recordatorio_enviado = 1 WHERE idtareas = ?`;
+            const values = [idtask];
+
+            const [result] = await db.execute(query, values);
+
+            if (result.affectedRows > 0) {
+                console.log(`Task reminder status updated for task ID ${task.idtareas}`);
+            } else {
+                console.warn(`Task with ID ${task.idtareas} not found or already updated.`);
+            }
+        } catch (error) {
+            console.error('Error updating task reminder status:', error);
             throw error; // Rethrow the error to handle it further up the call stack
         }
     }
 
-    getCompanies(db) {
-        return new Promise((resolve, reject) => {
-            db.query(`SELECT * FROM empresas`, (err, result) => {
-                if(err) reject(err);
-                resolve(result);
-            });
-        });
+
+    verifyDeadlineString(deadline) {
+        if(deadline.toLowerCase() === "hoy"){
+            deadline = new Date().toISOString().split('T')[0];
+        }
+        if (deadline.toLowerCase() === "mañana") {
+            let tomorrow = new Date();
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            deadline = tomorrow.toISOString().split('T')[0];
+        }
+        else if (deadline.toLowerCase() === "pasado mañana") {
+            let tomorrow = new Date();
+            tomorrow.setDate(tomorrow.getDate() + 2);
+            deadline = tomorrow.toISOString().split('T')[0];
+        }
+        else if (deadline.toLowerCase() === "la próxima semana" || deadline.toLowerCase() === "la semana que viene") {
+            let nextWeek = new Date();
+            nextWeek.setDate(nextWeek.getDate() + 7);
+            deadline = nextWeek.toISOString().split('T')[0];
+        }
+        else if (deadline.toLowerCase().startsWith("el proximo")) {
+            let nextDay = new Date();
+            let days = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"];
+            let day = deadline.split(" ")[1];
+            let dayIndex = days.indexOf(day);
+            let today = nextDay.getDay();
+            let diff = dayIndex - today;
+            if (diff < 0) diff += 7;
+            nextDay.setDate(nextDay.getDate() + diff);
+            deadline = nextDay.toISOString().split('T')[0];
+        }
+        else if (deadline.toLowerCase().startsWith("el")) {
+            let nextDay = new Date();
+            let days = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"];
+            let day = deadline.split(" ")[1];
+            let dayIndex = days.indexOf(day);
+            let today = nextDay.getDay();
+            let diff = dayIndex - today;
+            if (diff <= 0) diff += 7;
+            nextDay.setDate(nextDay.getDate() + diff);
+            deadline = nextDay.toISOString().split('T')[0];
+        }
+        // same as before but without the "el"
+            else if(deadline.toLowerCase().startsWith("lunes") || deadline.toLowerCase().startsWith("martes") || deadline.toLowerCase().startsWith("miercoles") ||
+            deadline.toLowerCase().startsWith("jueves") || deadline.toLowerCase().startsWith("viernes") || deadline.toLowerCase().startsWith("sabado") ||
+            deadline.toLowerCase().startsWith("domingo")){
+            let nextDay = new Date();
+            let days = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"];
+            let day = deadline.split(" ")[0];
+            let dayIndex = days.indexOf(day);
+            let today = nextDay.getDay();
+            let diff = dayIndex - today;
+            if (diff < 0) diff += 7;
+            nextDay.setDate(nextDay.getDate() + diff);
+            deadline = nextDay.toISOString().split('T')[0];
+        }
+        else {
+            let date = new Date(deadline);
+            if (date.toString() === "Invalid Date") {
+                deadline = null;
+            }
+            else {
+                deadline = date.toISOString().split('T')[0];
+            }
+        }
+        return deadline;
     }
 
 

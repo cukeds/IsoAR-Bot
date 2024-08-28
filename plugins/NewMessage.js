@@ -1,5 +1,7 @@
 const fs = require("fs");
+const vCardParser = require('vcard-parser');
 const Utils = require("../utils");
+const config = require("../config");
 
 class EventTemplate {
     tipo;
@@ -22,12 +24,12 @@ class EventTemplate {
 class TaskTemplate {
     description;
     deadline;
-    employee;
+    employees;
 
     constructor() {
         this.description = "";
         this.deadline = "";
-        this.employee = "";
+        this.employees = [];
     }
 }
 
@@ -51,10 +53,14 @@ class NewMessage {
     }
 
     process(key, message) {
+        if (key.participant) {
+            key.group = key.remoteJid;
+            key.remoteJid = key.participant;
+        }
         if (this.#getText(key, message).startsWith("!")) return;
         let senderId = key.remoteJid.split("@")[0];
         try {
-            fs.mkdirSync(this.#utils.baseFilePath(senderId), { recursive: true });
+            fs.mkdirSync(this.#utils.baseFilePath(senderId), {recursive: true});
             console.log("Message history directory created.");
         } catch (mkdirError) {
             console.error("Error creating message history directory:", mkdirError);
@@ -62,11 +68,20 @@ class NewMessage {
         }
 
         let history = this.#utils.readHistory(key.remoteJid);
-        if(history.firstMessage){
+        if (history.firstMessage) {
             this.handleFirstTimeMessage(key, history, message);
-        }
-        else{
+        } else {
             this.handlePreviousChatMessage(key, history, message);
+        }
+    }
+
+    extractWaidFromVcard(vcard){
+        let parsed = vCardParser.parse(vcard);
+        let telField = parsed.tel.find(t => t.meta?.waid);
+        if(telField){
+            return telField.meta.waid[0];
+        }else{
+            return null;
         }
     }
 
@@ -77,18 +92,16 @@ class NewMessage {
         this.#sendMessage(
             key.remoteJid,
             {
-                text: `¡Hola! Soy tu asistente virtual. Por favor indica tu nombre y apellido`,
+                text: `¡Hola! Soy tu asistente virtual. Escribe ayuda para ver los comandos disponibles.`,
             },
-
         );
-        this.#utils.updateUserData(key.remoteJid, "status", "waiting_name");
+        //this.#utils.updateUserData(key.remoteJid, "status", "waiting_name");
     }
 
 
     handlePreviousChatMessage(key, history, message) {
         let userData = this.#utils.readUserdata(key.remoteJid);
-
-        switch(userData["status"]) {
+        switch (userData["status"]) {
             case "waiting_name":
                 this.handleNameMessage(key, history, message);
                 break;
@@ -114,6 +127,17 @@ class NewMessage {
             case "event_documentacion":
             case "event_acciones_inmediatas":
                 this.handleEventMessage(key, history, message);
+                break;
+            case "meeting":
+            case "meeting_description":
+            case "meeting_date":
+            case "meeting_time":
+            case "meeting_participants":
+                this.handleMeetingMessage(key, history, message);
+                break;
+            case "group_meeting":
+            case "group_meeting_date":
+                this.handleGroupMeetingMessage(key, history, message);
                 break;
             default:
                 this.handleDefaultMessage(key, history, message);
@@ -175,36 +199,122 @@ class NewMessage {
         );
     }
 
-    handleIdleMessage(key, history, message) {
-        // Read the message and check if it's a command
-        let text = this.#getText(key, message);
+    getEmployeesFromMessage(key, message){
+        let employees;
+        if(message.contactsArrayMessage){
+            // handle multiple contacts
+            employees = message.contactsArrayMessage.contacts.map(contact => this.extractWaidFromVcard(contact.vcard));
+            // if any of the contacts is null, return
+            if(employees.some(e => e === null)){
+                this.#sendMessage(
+                    key.remoteJid,
+                    {
+                        text: `No se ha podido obtener uno de los contactos. Por favor intenta de nuevo.`,
+                    },
+                );
+                return;
+            }
+        }
+        if(message.contactMessage){
+            // handle single contact
+            employees = [this.extractWaidFromVcard(message.contactMessage.vcard)];
+            if(employees[0] === null){
+                this.#sendMessage(
+                    key.remoteJid,
+                    {
+                        text: `No se ha podido obtener el contacto. Por favor intenta de nuevo.`,
+                    },
+                );
+                return;
+            }
 
+        }
+        if(message.conversation){
+            // handle text
+            if(this.#getText(key, message).toLowerCase().includes("yo")){
+                employees = [key.remoteJid.split("@")[0]];
+            }
+            else{
+                // error
+                this.#sendMessage(
+                    key.remoteJid,
+                    {
+                        text: `No entiendo a quien quieres asignar la tarea. Por favor intenta de nuevo.`,
+                    },
+                );
+            }
+        }
+        return employees;
+    }
+
+    checkAndUpdateStatus(check, key, history, message) {
+        let text = this.#getText(key, message);
+        if (text.toLowerCase().includes(check.str)) {
+            // set the status
+            this.#utils.updateUserData(key.remoteJid, "status", check.status);
+            return true;
+        }
+        return false;
+    }
+
+    checkEvents(key, history, message) {
+        let text = this.#getText(key, message);
         if (this.#events.includes(text.toLowerCase())) {
             // set the status to "event"
             this.#utils.updateUserData(key.remoteJid, "status", "event");
             // call the event handler
             this.handleEventMessage(key, history, message);
-            return;
+            return true;
+        }
+        return false;
+    }
+
+    checkAll(checks, key, history, message) {
+        let checked = false;
+        checks.forEach(check => {
+            if (this.checkAndUpdateStatus(check, key, history, message)) {
+                checked = true;
+                check.callback(key, history, message);
+            }
+        });
+        return checked;
+    }
+
+    handleIdleMessage(key, history, message) {
+        // Read the message and check if it's a command
+
+        if (key.group) {
+            // group checks
+            let group_checks = [
+                {str: "tarea bot", status: "task", callback: this.handleTaskMessage.bind(this)},
+                {str: "reunion bot", status: "meeting", callback: this.handleMeetingMessage.bind(this)},
+                {str: "reunión bot", status: "meeting", callback: this.handleMeetingMessage.bind(this)},
+                {str: `@${config.botConfig.botNumber}`, status: "group_meeting", callback: this.handleGroupMeetingMessage.bind(this)}
+            ]
+
+            if (this.checkAll(group_checks, key, history, message)) return;
+        } else {
+            // private checks
+            let private_checks = [
+                {str: "tarea", status: "task", callback: this.handleTaskMessage.bind(this)},
+                {str: "reunion", status: "meeting", callback: this.handleMeetingMessage.bind(this)},
+                {str: "reunión", status: "meeting", callback: this.handleMeetingMessage.bind(this)},
+            ]
+
+            if (this.checkEvents(key, history, message)) return;
+            if (this.checkAll(private_checks, key, history, message)) return;
+
+            if (this.#getText(key, message).toLowerCase() === "ayuda") {
+                this.#sendMessage(
+                    key.remoteJid,
+                    {
+                        text: this.#help_message,
+                    },
+                );
+                return;
+            }
         }
 
-        if (text.toLowerCase() === "tarea") {
-                    // set the status to "task"
-            this.#utils.updateUserData(key.remoteJid, "status", "task");
-            // call the task handler
-            this.handleTaskMessage(key, history, message);
-            return;
-        }
-
-
-        if (text.toLowerCase() === "ayuda") {
-            this.#sendMessage(
-                key.remoteJid,
-                {
-                    text: this.#help_message,
-                },
-            );
-            return;
-        }
 
         this.#sendMessage(
             key.remoteJid,
@@ -217,15 +327,14 @@ class NewMessage {
     handleEventMessage(key, history, message) {
         // check current status
         let userData = this.#utils.readUserdata(key.remoteJid);
-        switch(userData["status"]) {
+        switch (userData["status"]) {
             case "event":
                 let event = new EventTemplate();
                 event.tipo = this.#getText(key, message).toLowerCase();
                 let response = `Por favor indique el origen del evento.`;
-                if(event.tipo === "inc"){
+                if (event.tipo === "inc") {
                     response = `Por favor indique el origen de la inconformidad. (Queja Cliente, Auditoria, Interno)`;
-                }
-                else if(event.tipo === "mej"){
+                } else if (event.tipo === "mej") {
                     response = `Por favor indique el origen de la mejora. (Trabajo Diario, Sugerencia Externa, Al verlo en otro lugar)`;
                 }
                 this.#sendMessage(
@@ -260,15 +369,17 @@ class NewMessage {
 
     handleOrigenMessage(key, history, message, event) {
         let origen = this.#getText(key, message);
+        if (origen.length < 3) return;
+
         // Verify that the origen is valid
         if (["queja cliente", "auditoria", "interno", "trabajo diario", "sugerencia externa", "al verlo en otro lugar"].includes(origen.toLowerCase())) {
             event.origen = origen;
             this.#utils.updateUserData(key.remoteJid, "status", "event_descripcion");
             let response = "Por favor indique la descripción del evento."
-            if(event.tipo === "inc"){
+            if (event.tipo === "inc") {
                 response = "Explicar lo más claro posible cual es el incumplimiento, con fechas y hora de ocurrencia, si ha tenido un costo, o significó una pérdida."
             }
-            if(event.tipo === "mej"){
+            if (event.tipo === "mej") {
                 response = "Explicar detalles de la mejora, aplicaciones, si es posible estimación de costo y tiempo y que mejorará."
             }
             this.#sendMessage(
@@ -290,13 +401,15 @@ class NewMessage {
 
     handleDescripcionMessage(key, history, message, event) {
         let descripcion = this.#getText(key, message);
+        if (descripcion.length < 3) return;
+
         event.descripcion = descripcion;
         this.#utils.updateUserData(key.remoteJid, "status", "event_causa");
         let response = "Por favor indique la causa del evento."
-        if(event.tipo === "inc"){
+        if (event.tipo === "inc") {
             response = "Indicar la causa de la inconformidad. (Como sucedio, datos ampliatorios que ayuden)"
         }
-        if(event.tipo === "mej"){
+        if (event.tipo === "mej") {
             response = "Indicar la causa raíz de la mejora.  (Como se le ocurrió, datos ampliatorios que ayuden)"
         }
         this.#sendMessage(
@@ -310,6 +423,7 @@ class NewMessage {
 
     handleCausaMessage(key, history, message, event) {
         let causa = this.#getText(key, message);
+        if (causa.length < 3) return;
         event.causa = causa;
         this.#utils.updateUserData(key.remoteJid, "status", "event_documentacion");
         this.#utils.updateUserData(key.remoteJid, "event", event);
@@ -323,6 +437,7 @@ class NewMessage {
 
     handleDocumentacionMessage(key, history, message, event) {
         let documentacion = this.#getText(key, message);
+        if (documentacion.length < 3) return;
         event.documentacion = documentacion;
         this.#utils.updateUserData(key.remoteJid, "status", "event_acciones_inmediatas");
         this.#utils.updateUserData(key.remoteJid, "event", event);
@@ -353,6 +468,17 @@ class NewMessage {
     handleTaskMessage(key, history, message) {
         // read user data
         let userData = this.#utils.readUserdata(key.remoteJid);
+        if (key.group) {
+            this.#sendMessage(
+                key.group,
+                {
+                    text: `Para registrar una tarea, por favor envíe un mensaje privado al bot con el comando "tarea"`,
+                },
+            );
+            this.#utils.updateUserData(key.remoteJid, "status", "idle");
+            return;
+        }
+
         // check current status
         switch (userData["status"]) {
             case "task":
@@ -384,36 +510,62 @@ class NewMessage {
 
     handleTaskDescriptionMessage(key, history, message, task) {
         let description = this.#getText(key, message);
+        if (description.length < 3) return;
         task.description = description;
         this.#utils.updateUserData(key.remoteJid, "status", "task_employee");
         this.#utils.updateUserData(key.remoteJid, "task", task);
         this.#sendMessage(
             key.remoteJid,
             {
-                text: `Por favor indique el empleado asignado a la tarea.`,
+                text: `Por favor seleccione los contacto a los que desea asignar la tarea usando el boton +. Cuando haya terminado, presione el boton de enviar.`,
             },
         );
     }
 
     handleTaskEmployeeMessage(key, history, message, task) {
-        let employee = this.#getText(key, message);
-        task.employee = employee;
+        task.employees = this.getEmployeesFromMessage(key, message);
         this.#utils.updateUserData(key.remoteJid, "status", "task_deadline");
         this.#utils.updateUserData(key.remoteJid, "task", task);
         this.#sendMessage(
             key.remoteJid,
             {
-                text: `Por favor indique la fecha y hora de la tarea. Formato: 2020-01-01 10:10:10`,
+                text: `Por favor indique la fecha de la tarea. Las opciones son: \n`
+                    + `⚫ Hoy, Mañana, Pasado mañana, La próxima semana, La semana que viene, \n`
+                    + `⚫ El próximo lunes/martes/etc, \n`
+                    + `⚫ El lunes/martes/etc que viene`,
+
             },
         );
     }
 
     handleTaskDateMessage(key, history, message, task) {
         let deadline = this.#getText(key, message);
-        task.deadline = deadline;
+        if (deadline.length < 3) return;
+        // TODO change 10:00:00 to start of the work day from company settings
+        let workday_start = "10:00:00";
+        let workday_end = "18:00:00";
+
+        // cases "mañana", "pasado mañana", "la próxima semana", "la semana que viene", "el proximo lunes/martes/miercoles/jueves/viernes/sabado/domingo", "el lunes/martes/miercoles/jueves/viernes/sabado/domingo que viene"
+
+        task.deadline = this.#utils.verifyDeadlineString(deadline);
+        if (task.deadline === null) {
+            this.#sendMessage(
+                key.remoteJid,
+                {
+                    text: `La fecha de la tarea no es válida. Por favor indique la fecha de la tarea nuevamente.`,
+                },
+            );
+            return;
+        }
+
+        if (deadline.toLowerCase() === "hoy") {
+            task.deadline += " " + workday_end;
+        } else {
+            task.deadline += " " + workday_start;
+        }
         // Validate datetime to be SQL format 2020-01-01 10:10:10
         let regex = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
-        if (!regex.test(deadline)) {
+        if (!regex.test(task.deadline)) {
             this.#sendMessage(
                 key.remoteJid,
                 {
@@ -424,7 +576,7 @@ class NewMessage {
         }
 
         // date in the past
-        if (new Date(deadline) < new Date()) {
+        if (new Date(task.deadline) < new Date()) {
             this.#sendMessage(
                 key.remoteJid,
                 {
@@ -444,12 +596,249 @@ class NewMessage {
             },
         );
         // Save the task to the history
-        history.tasks.push(task);
+        for(let employee of task.employees){
+            let to_save = new TaskTemplate();
+            to_save.description = task.description;
+            to_save.deadline = task.deadline;
+            to_save.employee = employee;
+
+            console.log("Saving task to history");
+            history.tasks.push(to_save);
+        }
         this.#utils.saveHistory(key.remoteJid, history);
     }
 
+    handleMeetingMessage(key, history, message) {
+        // read user data
+        let userData = this.#utils.readUserdata(key.remoteJid);
+        if (key.group) {
+            this.#sendMessage(
+                key.group,
+                {
+                    text: `Para registrar una reunion, por favor envíe un mensaje privado al bot con el comando "reunion"`,
+                },
+            );
+            this.#utils.updateUserData(key.remoteJid, "status", "idle");
+            return;
+        }
 
+        // check current status
+        switch (userData["status"]) {
+            case "meeting":
+                let meeting = new TaskTemplate();
+                let response = `Por favor indique un nombre para la reunión.`;
+                this.#sendMessage(
+                    key.remoteJid,
+                    {
+                        text: response,
+                    },
+                );
+                this.#utils.updateUserData(key.remoteJid, "status", "meeting_description");
+                this.#utils.updateUserData(key.remoteJid, "task", meeting);
+                break;
+            case "meeting_description":
+                this.handleMeetingDescriptionMessage(key, history, message, this.#utils.readUserdata(key.remoteJid)["task"]);
+                break;
+            case "meeting_date":
+                this.handleMeetingDateMessage(key, history, message, this.#utils.readUserdata(key.remoteJid)["task"]);
+                break;
+            case "meeting_time":
+                this.handleMeetingTimeMessage(key, history, message, this.#utils.readUserdata(key.remoteJid)["task"]);
+                break;
+            case "meeting_participants":
+                this.handleMeetingParticipantsMessage(key, history, message, this.#utils.readUserdata(key.remoteJid)["task"]);
+                break;
+            default:
+                this.handleIdleMessage(key, history, message);
+                break;
+        }
+    }
 
+    handleMeetingDescriptionMessage(key, history, message, meeting) {
+        let description = this.#getText(key, message);
+        if (description.length < 3) return;
+        meeting.description = `Reunion: ${description}`;
+        this.#utils.updateUserData(key.remoteJid, "status", "meeting_date");
+        this.#utils.updateUserData(key.remoteJid, "task", meeting);
+        this.#sendMessage(
+            key.remoteJid,
+            {
+                text: `Por favor indique la fecha de la reunión. Las opciones son: \n`
+                    + `⚫ Hoy, Mañana, Pasado mañana, La próxima semana, La semana que viene, \n`
+                    + `⚫ El próximo lunes/martes/etc, \n`
+                    + `⚫ El lunes/martes/etc que viene`,
+
+            },
+        );
+    }
+
+    handleMeetingDateMessage(key, history, message, meeting) {
+        let date = this.#getText(key, message);
+        if (date.length < 3) return;
+        let deadline = this.#utils.verifyDeadlineString(date);
+        if (deadline === null) {
+            this.#sendMessage(
+                key.remoteJid,
+                {
+                    text: `La fecha de la reunión no es válida. Por favor indique la fecha de la reunión nuevamente.`,
+                },
+            );
+            return;
+        }
+
+        meeting.deadline = deadline;
+        this.#utils.updateUserData(key.remoteJid, "status", "meeting_time");
+        this.#utils.updateUserData(key.remoteJid, "task", meeting);
+        this.#sendMessage(
+            key.remoteJid,
+            {
+                text: `Por favor indique la hora de la reunion (HH:MM)`,
+            },
+        );
+    }
+
+    handleMeetingTimeMessage(key, history, message, meeting) {
+        let time = this.#getText(key, message);
+        if (time.length < 3) return;
+
+        // validate time
+        let regex = /^\d{2}:\d{2}$/;
+        if (!regex.test(time)) {
+            this.#sendMessage(
+                key.remoteJid,
+                {
+                    text: `El formato de la hora no es válido. Por favor indique la hora en el formato HH:MM, por ejemplo, 10:30.`,
+            },
+        );
+            return;
+        }
+
+        meeting.deadline = `${meeting.deadline} ${time}:00`;
+
+        this.#utils.updateUserData(key.remoteJid, "status", "meeting_participants");
+        this.#utils.updateUserData(key.remoteJid, "task", meeting);
+        this.#sendMessage(
+            key.remoteJid,
+            {
+                text: `Por favor seleccione los contacto a los que desea asignar la tarea usando el boton +. Cuando haya terminado, presione el boton de enviar.`,
+            },
+        );
+    }
+
+    handleMeetingParticipantsMessage(key, history, message, meeting) {
+
+        meeting.employees = this.getEmployeesFromMessage(key, message);
+        meeting.employees.push(key.remoteJid.split("@")[0]);
+
+        this.#utils.updateUserData(key.remoteJid, "status", "idle");
+        this.#utils.updateUserData(key.remoteJid, "task", meeting);
+        this.#sendMessage(
+            key.remoteJid,
+            {
+                text: `Gracias. Hemos registrado la reunión. En breve nos pondremos en contacto contigo`,
+            },
+        );
+        // Save the meeting to the history
+        for(let employee of meeting.employees){
+            let to_save = new TaskTemplate();
+            to_save.description = meeting.description;
+            to_save.deadline = meeting.deadline;
+            to_save.employee = employee;
+
+            history.tasks.push(to_save);
+        }
+        this.#utils.saveHistory(key.remoteJid, history);
+    }
+
+    handleGroupMeetingMessage(key, history, message) {
+        // read user data
+        let userData = this.#utils.readUserdata(key.remoteJid);
+        let meeting = new TaskTemplate();
+        let response = "";
+        let members = false;
+
+        // check current status
+        switch (userData["status"]) {
+            case "group_meeting":
+                this.#getText(key, message).split("@").forEach((part, index) => {
+                    part = part.trim();
+                    if(part !== config.botConfig.botNumber && part !== ""){
+                        console.log("Adding participant", part);
+                        meeting.employees.push(part);
+                    }
+                });
+                meeting.employees.push(key.remoteJid.split("@")[0]);
+
+                response = `Por favor indique dia y hora para la reunión.`;
+                this.#sendMessage(
+                    key.group,
+                    {
+                        text: response,
+                    },
+                );
+                this.#utils.updateUserData(key.remoteJid, "status", "group_meeting_date");
+                this.#utils.updateUserData(key.remoteJid, "task", meeting);
+                break;
+            case "group_meeting_date":
+                this.handleGroupMeetingDateMessage(key, history, message, this.#utils.readUserdata(key.remoteJid)["task"]);
+                break;
+            default:
+                this.handleIdleMessage(key, history, message);
+                break;
+        }
+    }
+
+    handleGroupMeetingDateMessage(key, history, message, meeting) {
+        let datetime = this.#getText(key, message);
+        let time = datetime.split(" ")[1];
+        let date = datetime.split(" ")[0];
+        if (date.length < 3) return;
+        if (time.length < 3) return;
+        let deadline = this.#utils.verifyDeadlineString(date);
+        if (deadline === null) {
+            this.#sendMessage(
+                key.group,
+                {
+                    text: `La fecha de la reunión no es válida. Por favor indique la fecha de la reunión nuevamente.`,
+                },
+            );
+            return;
+        }
+
+        meeting.deadline = deadline;
+
+        // validate time
+        let regex = /^\d{2}:\d{2}$/;
+        if (!regex.test(time)) {
+            this.#sendMessage(
+                key.group,
+                {
+                    text: `El formato de la hora no es válido. Por favor indique la hora en el formato HH:MM, por ejemplo, 10:30.`,
+                },
+            );
+            return;
+        }
+
+        meeting.deadline = `${meeting.deadline} ${time}:00`;
+        this.#utils.updateUserData(key.remoteJid, "status", "idle");
+        this.#utils.updateUserData(key.remoteJid, "task", meeting);
+        this.#sendMessage(
+            key.group,
+            {
+                text: `Gracias. Hemos registrado la reunión. En breve nos pondremos en contacto contigo`,
+            },
+        );
+
+        // Save the meeting to the history
+        for(let employee of meeting.employees){
+            let to_save = new TaskTemplate();
+            to_save.description = "Reunion";
+            to_save.deadline = meeting.deadline;
+            to_save.employee = employee;
+            history.tasks.push(to_save);
+        }
+        this.#utils.saveHistory(key.remoteJid, history);
+    }
 }
 
 module.exports = NewMessage;

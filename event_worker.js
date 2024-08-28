@@ -27,12 +27,14 @@ class EventWorker {
 
     async init() {
         // create company folder if it doesn't exist
+        await this.#db.connect();
         try {
             const companies = await this.#utils.getCompanies(this.#db);
             for (const company of companies) {
                 //await this.createCompany(company.nombre);
                 console.log(company.nombre);
             }
+
         }
         catch(err){
             console.error('Error initializing companies:', err);
@@ -52,6 +54,7 @@ class EventWorker {
         }
 
 
+        await this.#db.close();
         while (true) {
             await this.readEvents();
             await this.processEvents();
@@ -191,7 +194,6 @@ class EventWorker {
     }
 
     async processMessages() {
-        console.log(this.#wabot.isConnected())
         if(!this.#wabot.isConnected()) return;
         try {
             const users = await fs.readdir('users');

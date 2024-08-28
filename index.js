@@ -7,7 +7,7 @@ const { botConfig, pluginsConfig } = require("./config");
 const NewMessage = require("./plugins/NewMessage");
 const { google } = require('googleapis');
 const fs = require('fs');
-const DB = require("./db");
+const mysql = require('mysql2/promise');
 
 const plugins = {
     "new_message": new NewMessage(pluginsConfig.newMessage),
@@ -23,15 +23,21 @@ const auth = new google.auth.JWT(
     SCOPES
 );
 
-const db = new DB({
+const dbConfig = {
     host: 'localhost',
     user: 'root',
     password: 'root',
     database: 'isoar'
-});
+};
+const createDbConnection = async () => {
+    return mysql.createConnection(dbConfig);
+};
+
+
 
 // Function to start event worker
 async function startEventWorker(bot) {
+    const db = await createDbConnection();
     const drive = google.drive({ version: 'v3', auth });
     const eventWorker = new EventWorker(drive, bot, db);
 
@@ -45,6 +51,7 @@ async function startEventWorker(bot) {
 
 // Function to start task worker
 async function startTaskWorker(bot) {
+    const db = await createDbConnection();
     const taskWorker = new TaskWorker(bot, db);
 
     try {

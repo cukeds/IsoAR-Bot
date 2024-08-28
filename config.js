@@ -5,6 +5,7 @@ const botConfig = {
   authFolder: "auth",
   selfReply: false,
   logMessages: true,
+  botNumber: "5491179019001",
 };
 
 
@@ -14,6 +15,7 @@ help_message += "inc: Para reportar una inconformidad 🚨\n";
 help_message += "mej: Para reportar una mejora 📈\n";
 help_message += "obs: Para reportar una observación 🔎\n";
 help_message += "tarea: Para registrar una tarea o actividad 📝\n";
+help_message += "reunion: Para registrar una reunion 🤝\n";
 const pluginsConfig = {
   newMessage: {
     events: events,
