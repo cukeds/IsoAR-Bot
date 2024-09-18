@@ -17,7 +17,7 @@
   },
   "license": "ISC",
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.6.0",
+    "@whiskeysockets/baileys": "^6.7.7",
     "docx": "^8.5.0",
     "docxtemplater": "^3.47.4",
     "googleapis": "^137.1.0",

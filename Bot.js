@@ -29,6 +29,7 @@ class Bot {
     }
 
     async connect() {
+
         const {state, saveCreds} = await useMultiFileAuthState(this.#authFolder);
 
         this.#saveCredentials = saveCreds;
@@ -42,6 +43,7 @@ class Bot {
         });
 
         this.#plugins["new_message"].init(this.#socket, this.#getText, this.#sendMessage);
+        // send a message to the bot to test if it is connected
 
     }
 

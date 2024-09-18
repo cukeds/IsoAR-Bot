@@ -7,3 +7,5 @@ roles.json
 node_modules/
 
 .idea/
+drive_creds.json
+users/

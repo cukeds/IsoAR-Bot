@@ -66,11 +66,13 @@ async function startTaskWorker(bot) {
 async function main() {
     // Initialize Bot instance with plugins and configuration
     const botInstance = new Bot(plugins, botConfig);
-
+    console.log("Bot instance created");
     try {
         // Connect and run bot instance
         await botInstance.connect();
+        console.log("Bot connected");
         await botInstance.run();
+        console.log("Bot running");
 
         // Start event and task workers
         await Promise.all([
